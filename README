@@ -1,3 +1,9 @@
+This repo contains my patch for my Master Thesis for the host machine.
+
+In order to compile this repo you should follow the [official documentation](https://canonical-kernel-docs.readthedocs-hosted.com/latest/how-to/develop-customise/build-kernel/) and update the grub in order to use it.
+
+---
+
 Linux kernel
 ============
 
