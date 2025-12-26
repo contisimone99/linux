@@ -269,7 +269,7 @@ struct kvm_xen_exit {
 #define KVM_EXIT_AP_RESET_HOLD    32
 #define KVM_EXIT_X86_BUS_LOCK     33
 #define KVM_EXIT_XEN              34
-
+#define KVM_EXIT_X86_DESC_TABLE   40
 /* For KVM_EXIT_INTERNAL_ERROR */
 /* Emulate instruction failed. */
 #define KVM_INTERNAL_ERROR_EMULATION	1
@@ -469,6 +469,19 @@ struct kvm_run {
 		} msr;
 		/* KVM_EXIT_XEN */
 		struct kvm_xen_exit xen;
+		struct {
+#define KVM_DESC_TABLE_LIDT	0
+#define KVM_DESC_TABLE_SIDT	1
+#define KVM_DESC_TABLE_LGDT	2
+#define KVM_DESC_TABLE_SGDT	3
+#define KVM_DESC_TABLE_LLDT	4
+#define KVM_DESC_TABLE_SLDT	5
+#define KVM_DESC_TABLE_LTR	6
+#define KVM_DESC_TABLE_STR	7
+			__u8 type;
+			__u8 pad[7];
+			__u64 rip;
+		} desc_table;
 		/* Fix the size of the union. */
 		char padding[256];
 	};

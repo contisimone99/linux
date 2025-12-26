@@ -1988,6 +1988,9 @@ static int vmx_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 	case MSR_IA32_DEBUGCTLMSR:
 		msr_info->data = vmcs_read64(GUEST_IA32_DEBUGCTL);
 		break;
+	case MSR_KVM_DESC_TABLE_EXITING:
+		msr_info->data = vcpu->arch.msr_desc_table_exit;
+		break;
 	default:
 	find_uret_msr:
 		msr = vmx_find_uret_msr(vmx, msr_info->index);
@@ -2315,7 +2318,23 @@ static int vmx_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 		}
 		ret = kvm_set_msr_common(vcpu, msr_info);
 		break;
-
+	case MSR_KVM_DESC_TABLE_EXITING:
+		/*
+		 * This MSR can be written once by the guest to enable
+		 * descriptor table exit monitoring. Once set to non-zero,
+		 * subsequent writes are silently ignored (one-time latch).
+		 */
+		if (vcpu->arch.msr_desc_table_exit) {
+			/* Already set, ignore subsequent writes */
+			break;
+		}
+		if (data) {
+			vcpu->arch.msr_desc_table_exit = data;
+			secondary_exec_controls_setbit(vmx, SECONDARY_EXEC_DESC);
+			pr_info("kvm: vCPU %d enabled descriptor table exit monitoring\n",
+				vcpu->vcpu_id);
+		}
+		break;
 	default:
 	find_uret_msr:
 		msr = vmx_find_uret_msr(vmx, msr_index);
@@ -3458,6 +3477,15 @@ static void vmx_get_idt(struct kvm_vcpu *vcpu, struct desc_ptr *dt)
 
 static void vmx_set_idt(struct kvm_vcpu *vcpu, struct desc_ptr *dt)
 {
+	/*
+	 * If IDTR protection is enabled via MSR, block any attempt to
+	 * modify IDTR (except during vCPU reset before the MSR is set).
+	 */
+	if (vcpu->arch.msr_desc_table_exit) {
+		pr_warn("kvm: vCPU %d attempted IDTR modification via vmx_set_idt (blocked)\n",
+			vcpu->vcpu_id);
+		return;
+	}
 	vmcs_write32(GUEST_IDTR_LIMIT, dt->size);
 	vmcs_writel(GUEST_IDTR_BASE, dt->address);
 }
@@ -4348,9 +4376,15 @@ static u32 vmx_secondary_exec_control(struct vcpu_vmx *vmx)
 				  SECONDARY_EXEC_VIRTUAL_INTR_DELIVERY);
 	exec_control &= ~SECONDARY_EXEC_VIRTUALIZE_X2APIC_MODE;
 
-	/* SECONDARY_EXEC_DESC is enabled/disabled on writes to CR4.UMIP,
-	 * in vmx_set_cr4.  */
-	exec_control &= ~SECONDARY_EXEC_DESC;
+	/*
+	 * SECONDARY_EXEC_DESC is enabled/disabled on writes to CR4.UMIP
+	 * (in vmx_set_cr4), or when userspace requests descriptor table
+	 * exiting via MSR_KVM_DESC_TABLE_EXITING.
+	 */
+	if (vcpu->arch.msr_desc_table_exit)
+		exec_control |= SECONDARY_EXEC_DESC;
+	else
+		exec_control &= ~SECONDARY_EXEC_DESC;
 
 	/* SECONDARY_EXEC_SHADOW_VMCS is enabled when L1 executes VMPTRLD
 	   (handle_vmptrld).
@@ -5086,6 +5120,46 @@ static int handle_set_cr4(struct kvm_vcpu *vcpu, unsigned long val)
 
 static int handle_desc(struct kvm_vcpu *vcpu)
 {
+
+	/*
+	 * If the guest enabled descriptor table exit monitoring via MSR,
+	 * log any LIDT/LGDT/etc. attempts.
+	 */
+	if (vcpu->arch.msr_desc_table_exit) {
+		u32 exit_reason = vmx_get_exit_reason(vcpu).basic;
+		unsigned long exit_qual = vmx_get_exit_qual(vcpu);
+		unsigned long rip = kvm_rip_read(vcpu);
+		static const char * const gdtr_idtr_names[] = {
+			"SGDT", "SIDT", "LGDT", "LIDT"
+		};
+		static const char * const ldtr_tr_names[] = {
+			"SLDT", "STR", "LLDT", "LTR"
+		};
+		const char *insn_name;
+		u8 insn_type = exit_qual & 3;
+
+		if (exit_reason == EXIT_REASON_GDTR_IDTR)
+			insn_name = gdtr_idtr_names[insn_type];
+		else
+			insn_name = ldtr_tr_names[insn_type];
+
+		pr_warn("kvm: vCPU %d attempted %s at RIP 0x%lx (blocked after IDTR lock)\n",
+			vcpu->vcpu_id, insn_name, rip);
+
+		/*
+		 * For LIDT specifically, silently skip the instruction.
+		 * The guest thinks LIDT succeeded, but IDTR remains unchanged.
+		 * Other instructions (SIDT, LGDT, SGDT, etc.) are emulated normally.
+		 */
+		if (exit_reason == EXIT_REASON_GDTR_IDTR && insn_type == 3) {
+			/* LIDT - silently skip, don't update IDTR */
+			return kvm_skip_emulated_instruction(vcpu);
+		}
+
+		/* Other descriptor table instructions - allow */
+		return kvm_emulate_instruction(vcpu, 0);
+	}
+
 	WARN_ON(!(vcpu->arch.cr4 & X86_CR4_UMIP));
 	return kvm_emulate_instruction(vcpu, 0);
 }

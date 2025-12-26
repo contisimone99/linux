@@ -792,6 +792,7 @@ struct kvm_vcpu_arch {
 	unsigned long guest_debug_dr7;
 	u64 msr_platform_info;
 	u64 msr_misc_features_enables;
+	u64 msr_desc_table_exit;
 
 	u64 mcg_cap;
 	u64 mcg_status;

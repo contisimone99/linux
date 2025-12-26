@@ -1444,6 +1444,7 @@ static const u32 emulated_msrs_all[] = {
 
 	MSR_K7_HWCR,
 	MSR_KVM_POLL_CONTROL,
+	MSR_KVM_DESC_TABLE_EXITING,
 };
 
 static u32 emulated_msrs[ARRAY_SIZE(emulated_msrs_all)];
@@ -3674,6 +3675,15 @@ int kvm_set_msr_common(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 			return 1;
 		vcpu->arch.msr_misc_features_enables = data;
 		break;
+	case MSR_KVM_DESC_TABLE_EXITING:
+		/*
+		 * One-time latch: once set to non-zero, ignore subsequent writes.
+		 * This is primarily handled in vmx_set_msr() for Intel.
+		 */
+		if (vcpu->arch.msr_desc_table_exit)
+			break;  /* Already set, ignore */
+		vcpu->arch.msr_desc_table_exit = data;
+		break;
 	default:
 		if (kvm_pmu_is_valid_msr(vcpu, msr))
 			return kvm_pmu_set_msr(vcpu, msr_info);
@@ -3991,6 +4001,9 @@ int kvm_get_msr_common(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 		break;
 	case MSR_MISC_FEATURES_ENABLES:
 		msr_info->data = vcpu->arch.msr_misc_features_enables;
+		break;
+	case MSR_KVM_DESC_TABLE_EXITING:
+		msr_info->data = vcpu->arch.msr_desc_table_exit;
 		break;
 	case MSR_K7_HWCR:
 		msr_info->data = vcpu->arch.msr_hwcr;
