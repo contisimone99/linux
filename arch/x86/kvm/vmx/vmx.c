@@ -5117,26 +5117,29 @@ static int handle_set_cr4(struct kvm_vcpu *vcpu, unsigned long val)
 	} else
 		return kvm_set_cr4(vcpu, val);
 }
-
 static int handle_desc(struct kvm_vcpu *vcpu)
 {
-
 	/*
 	 * If the guest enabled descriptor table exit monitoring via MSR,
 	 * log any LIDT/LGDT/etc. attempts.
 	 */
 	if (vcpu->arch.msr_desc_table_exit) {
-		u32 exit_reason = vmx_get_exit_reason(vcpu).basic;
-		unsigned long exit_qual = vmx_get_exit_qual(vcpu);
-		unsigned long rip = kvm_rip_read(vcpu);
+		u32 exit_reason;
+		unsigned long exit_qual;
+		unsigned long rip;
+		const char *insn_name;
+		u8 insn_type;
 		static const char * const gdtr_idtr_names[] = {
 			"SGDT", "SIDT", "LGDT", "LIDT"
 		};
 		static const char * const ldtr_tr_names[] = {
 			"SLDT", "STR", "LLDT", "LTR"
 		};
-		const char *insn_name;
-		u8 insn_type = exit_qual & 3;
+
+		exit_reason = to_vmx(vcpu)->exit_reason.basic;
+		exit_qual = vmx_get_exit_qual(vcpu);
+		rip = kvm_rip_read(vcpu);
+		insn_type = exit_qual & 3;
 
 		if (exit_reason == EXIT_REASON_GDTR_IDTR)
 			insn_name = gdtr_idtr_names[insn_type];
@@ -5151,10 +5154,8 @@ static int handle_desc(struct kvm_vcpu *vcpu)
 		 * The guest thinks LIDT succeeded, but IDTR remains unchanged.
 		 * Other instructions (SIDT, LGDT, SGDT, etc.) are emulated normally.
 		 */
-		if (exit_reason == EXIT_REASON_GDTR_IDTR && insn_type == 3) {
-			/* LIDT - silently skip, don't update IDTR */
+		if (exit_reason == EXIT_REASON_GDTR_IDTR && insn_type == 3)
 			return kvm_skip_emulated_instruction(vcpu);
-		}
 
 		/* Other descriptor table instructions - allow */
 		return kvm_emulate_instruction(vcpu, 0);
@@ -5163,6 +5164,7 @@ static int handle_desc(struct kvm_vcpu *vcpu)
 	WARN_ON(!(vcpu->arch.cr4 & X86_CR4_UMIP));
 	return kvm_emulate_instruction(vcpu, 0);
 }
+
 
 static int handle_cr(struct kvm_vcpu *vcpu)
 {
