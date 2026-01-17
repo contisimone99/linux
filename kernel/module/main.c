@@ -59,6 +59,8 @@
 #include <linux/debugfs.h>
 #include <uapi/linux/module.h>
 #include "internal.h"
+#include <linux/delay.h>
+
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/module.h>
@@ -772,6 +774,135 @@ out:
 	mutex_unlock(&module_mutex);
 	return ret;
 }
+
+
+/**
+ * module_self_remove - Remove a module from within itself (INTERNAL)
+ * @mod: pointer to the module to remove
+ *
+ * This is an internal function that performs the actual module removal.
+ * It should not be called directly from modules - use module_schedule_self_remove instead.
+ */
+static void module_self_remove(struct module *mod)
+{
+	char buf[MODULE_FLAGS_BUF_SIZE];
+	
+	if (!mod) {
+		pr_err("module_self_remove: NULL module pointer\n");
+		return;
+	}
+
+	/* Acquire the module mutex */
+	if (mutex_lock_interruptible(&module_mutex) != 0) {
+		pr_err("module_self_remove: failed to acquire module_mutex\n");
+		return;
+	}
+
+	/* Check if other modules depend on us */
+	if (!list_empty(&mod->source_list)) {
+		pr_err("module_self_remove: module %s has dependencies\n", mod->name);
+		goto out;
+	}
+
+	/* Check module state - must be LIVE */
+	if (mod->state != MODULE_STATE_LIVE) {
+		pr_debug("module_self_remove: module %s not in LIVE state\n", mod->name);
+		goto out;
+	}
+
+	/* Module must have an exit function */
+	if (!mod->exit) {
+		pr_err("module_self_remove: module %s has no exit function\n", mod->name);
+		goto out;
+	}
+
+	/* Try to stop the module (check if it's in use) */
+	if (try_stop_module(mod, 0, NULL) != 0) {
+		pr_err("module_self_remove: module %s is in use\n", mod->name);
+		goto out;
+	}
+
+	mutex_unlock(&module_mutex);
+
+	/* Final destruction - no one is using it */
+	if (mod->exit != NULL)
+		mod->exit();
+
+	blocking_notifier_call_chain(&module_notify_list,
+				     MODULE_STATE_GOING, mod);
+	klp_module_going(mod);
+	ftrace_release_mod(mod);
+
+	async_synchronize_full();
+
+	/* Store the name for diagnostic purposes */
+	strscpy(last_unloaded_module.name, mod->name, 
+	        sizeof(last_unloaded_module.name));
+	strscpy(last_unloaded_module.taints, module_flags(mod, buf, false), 
+	        sizeof(last_unloaded_module.taints));
+
+	/* Free the module */
+	free_module(mod);
+
+	/* Wake up anyone waiting */
+	wake_up_all(&module_wq);
+
+	pr_info("module_self_remove: module removed successfully\n");
+	return;
+
+out:
+	mutex_unlock(&module_mutex);
+}
+
+/* Structure for asynchronous module removal */
+struct module_removal_work {
+	struct work_struct work;
+	struct module *mod;
+};
+
+static void do_module_self_remove(struct work_struct *work)
+{
+	struct module_removal_work *mrw = 
+		container_of(work, struct module_removal_work, work);
+	
+	/* Wait for module_init to fully complete */
+	msleep(200);
+	
+	module_self_remove(mrw->mod);
+	kfree(mrw);
+}
+
+/**
+ * module_schedule_self_remove - Schedule delayed self-removal of a module
+ * @mod: module to remove (use THIS_MODULE from the module)
+ *
+ * This function allows a module to schedule its own removal without
+ * generating error messages in dmesg. The removal happens asynchronously
+ * (after ~200ms) to ensure module_init has fully completed.
+ *
+ * Safe to call from module_init(). After calling this, module_init should
+ * return 0 (success).
+ *
+ * The module must have an exit function defined.
+ */
+void module_schedule_self_remove(struct module *mod)
+{
+	struct module_removal_work *work;
+
+	work = kmalloc(sizeof(*work), GFP_KERNEL);
+	if (!work) {
+		pr_err("module_schedule_self_remove: allocation failed\n");
+		return;
+	}
+
+	work->mod = mod;
+	INIT_WORK(&work->work, do_module_self_remove);
+	schedule_work(&work->work);
+
+	pr_info("Module %s scheduled for self-removal\n", mod->name);
+}
+EXPORT_SYMBOL_GPL(module_schedule_self_remove);
+
 
 void __symbol_put(const char *symbol)
 {

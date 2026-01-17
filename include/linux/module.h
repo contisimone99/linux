@@ -76,6 +76,18 @@ extern struct module_attribute module_uevent;
 extern int init_module(void);
 extern void cleanup_module(void);
 
+/*
+ * module_schedule_self_remove - Schedule removal of the calling module
+ * 
+ * This function allows a module to schedule its own removal without
+ * generating error messages in dmesg. The removal happens asynchronously
+ * after the calling function returns.
+ * 
+ * Must be called from module_init() context only.
+ * After calling this, module_init() should return 0 (success).
+ */
+void module_schedule_self_remove(struct module *mod);
+
 #ifndef MODULE
 /**
  * module_init() - driver initialization entry point
